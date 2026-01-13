@@ -127,7 +127,8 @@ object TensorLogic {
 
     // Parse the equation
     val parts = equation.split("->", -1) // Use -1 to preserve trailing empty strings
-    require(parts.length == 2, s"Einstein equation must have format 'inputs->output', got: $equation")
+    require(parts.length == 2, 
+      s"""Einstein equation must have format "inputs->output" (e.g., "ij,jk->ik"), got: $equation""")
 
     val inputSpec = parts(0).split(",").map(_.trim)
     val outputSpec = parts(1).trim
@@ -383,17 +384,28 @@ object TensorLogic {
   /**
    * Creates an embedding space representation for atoms.
    * This enables reasoning in continuous embedding spaces.
+   * 
+   * Note: Uses a simple one-hot/hash-based encoding. For production use with many atoms,
+   * consider using learned embeddings or more sophisticated initialization.
    */
   def embed(atoms: Set[Atom], embeddingDim: Int): Map[Atom, ContinuousTensor] = {
-    // Simple one-hot encoding as initial embedding
+    require(embeddingDim > 0, "Embedding dimension must be positive")
+    
+    // For better distribution with many atoms, use multiple hash functions
     atoms.zipWithIndex.map { case (atom, idx) =>
       val embedding = Array.fill(embeddingDim)(0.0)
+      
       if (idx < embeddingDim) {
+        // Use one-hot encoding for first atoms
         embedding(idx) = 1.0
       } else {
-        // For atoms beyond embedding dimension, use a hash-based approach
-        val hash = math.abs(atom.label.hashCode % embeddingDim)
-        embedding(hash) = 1.0
+        // Use hash-based encoding with multiple indices to reduce collisions
+        val hash1 = math.abs(atom.label.hashCode % embeddingDim)
+        val hash2 = math.abs((atom.label.hashCode * 31) % embeddingDim)
+        embedding(hash1) = 1.0
+        if (hash2 != hash1) {
+          embedding(hash2) = 0.5 // Use different weight to distinguish
+        }
       }
       atom -> ContinuousTensor(Seq(embeddingDim), embedding)
     }.toMap
@@ -459,8 +471,12 @@ object TensorLogicBridge {
 
       case Formula.And(literals) =>
         // Combine embeddings using AND operation
+        if (atomEmbeddings.isEmpty) {
+          throw new IllegalArgumentException("Cannot convert formula: no embeddings provided")
+        }
         literals.foldLeft(
-          ContinuousTensor(Seq(atomEmbeddings.values.head.shape.head), Array.fill(atomEmbeddings.values.head.shape.head)(1.0))
+          ContinuousTensor(Seq(atomEmbeddings.values.head.shape.head), 
+            Array.fill(atomEmbeddings.values.head.shape.head)(1.0))
         ) { (acc, lit) =>
           val litTensor = literalToTensor(lit, atomEmbeddings)
           TensorLogic.and(acc, litTensor).asInstanceOf[ContinuousTensor]
@@ -468,8 +484,12 @@ object TensorLogicBridge {
 
       case Formula.True =>
         // Return a tensor of all ones
-        val dim = atomEmbeddings.values.headOption.map(_.shape.head).getOrElse(1)
-        ContinuousTensor(Seq(dim), Array.fill(dim)(1.0))
+        if (atomEmbeddings.isEmpty) {
+          ContinuousTensor(Seq(1), Array(1.0))
+        } else {
+          val dim = atomEmbeddings.values.head.shape.head
+          ContinuousTensor(Seq(dim), Array.fill(dim)(1.0))
+        }
     }
   }
 
